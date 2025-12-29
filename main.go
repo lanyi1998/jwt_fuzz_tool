@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 )
@@ -18,12 +19,24 @@ var b64 = base64.RawURLEncoding
 var jwtStr string
 var fuzzFlag bool
 var dictFile string
+var bruteForce bool
+var bruteForceString string
+
+const (
+	lowercase = "abcdefghijklmnopqrstuvwxyz"
+	numbers   = "0123456789"
+	// 排除掉可能引起转义问题的反斜杠 \ 和双引号 "，如果需要可以自行加上
+	symbols = "!@#$%^&*()-_=+[]{}|;:',.<>?/`~"
+	s       = lowercase + numbers + symbols
+)
 
 func main() {
 	// Original JWT (from your input)
 	flag.StringVar(&jwtStr, "jwt", "", "jwt token")
 	flag.StringVar(&dictFile, "filename", "dict/fuzz.txt", "fuzz dict filename")
 	flag.BoolVar(&fuzzFlag, "fuzz", false, "fuzz")
+	flag.BoolVar(&bruteForce, "brute", false, "brute force")
+	flag.StringVar(&bruteForceString, "fuzz_sting", s, "brute force")
 	flag.Parse()
 
 	if jwtStr == "" {
@@ -38,17 +51,27 @@ func main() {
 		return
 	}
 	fmt.Println("JWT Info:\n" + parseJWT(parts[1]))
-	if !fuzzFlag {
-		vlunAttack(parts[0], parts[1])
-	} else {
+	if fuzzFlag {
 		result := bruteForceJWT(jwtStr, dictFile)
 		if result != "" {
 			fmt.Println("Success: Key found:", result)
 		} else {
 			fmt.Println("Key not found")
 		}
+		return
+	}
+	if bruteForce {
+		result := bruteForceStringJWT(jwtStr, strings.Split(bruteForceString, ""), 4)
+		if result != "" {
+			fmt.Println("Success: Key found:", result)
+		} else {
+			fmt.Println("Key not found")
+		}
+		return
 	}
 
+	vlunAttack(parts[0], parts[1])
+	return
 }
 
 func parseJWT(payload string) string {
@@ -59,6 +82,86 @@ func parseJWT(payload string) string {
 		return ""
 	}
 	return out.String()
+}
+
+func validateJWT(sigB64, alg string, dataToSign, secretCandidate string) bool {
+	var computedSig []byte
+	switch strings.ToUpper(alg) {
+	case "HS256":
+		h := hmac.New(sha256.New, []byte(secretCandidate))
+		h.Write([]byte(dataToSign))
+		computedSig = h.Sum(nil)
+	case "HS512":
+		h := hmac.New(sha512.New, []byte(secretCandidate))
+		h.Write([]byte(dataToSign))
+		computedSig = h.Sum(nil)
+	default:
+		fmt.Printf("Unsupported algorithm for brute force: %s (Currently only HS256, HS512 supported)\n", alg)
+		return false
+	}
+	return hmac.Equal(computedSig, []byte(sigB64))
+}
+
+func bruteForceStringJWT(token string, fuzzString []string, fuzzMaxLength int) string {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		fmt.Println("Error: Invalid Token format")
+		return ""
+	}
+
+	headerB64, _, sigB64 := parts[0], parts[1], parts[2]
+	dataToSign := parts[0] + "." + parts[1]
+
+	// 1. Parse Header to determine algorithm
+	headerBytes, _ := decodeB64(headerB64)
+	var header map[string]interface{}
+	json.Unmarshal(headerBytes, &header)
+
+	alg, ok := header["alg"].(string)
+	if !ok {
+		alg = "HS256" // Default
+	}
+
+	// 2. Decode original signature
+	targetSig, err := decodeB64(sigB64)
+	if err != nil {
+		fmt.Println("Error: Cannot decode original signature", err)
+		return ""
+	}
+	n := len(fuzzString)
+	if n == 0 {
+		return ""
+	}
+
+	// 依次生成长度为 1 到 fuzzMaxLength 的所有组合
+	for length := 1; length <= fuzzMaxLength; length++ {
+		// total 是当前长度下的总组合数: n^length
+		total := int(math.Pow(float64(n), float64(length)))
+
+		// indices 存储当前字符串每一位在 fuzzString 中的索引
+		indices := make([]int, length)
+
+		for i := 0; i < total; i++ {
+			// 1. 根据当前索引构建字符串
+			// 为了极致性能，可以使用 []byte 并在循环外初始化
+			res := make([]byte, length)
+			for j := 0; j < length; j++ {
+				res[j] = []byte(fuzzString[indices[j]])[0]
+			}
+
+			validateJWT(string(targetSig), alg, dataToSign, string(res))
+
+			// 3. 更新索引（类似于手工加法进位）
+			for j := length - 1; j >= 0; j-- {
+				indices[j]++
+				if indices[j] < n {
+					break // 没有进位，跳出更新循环
+				}
+				indices[j] = 0 // 产生进位，当前位归零，继续处理高位
+			}
+		}
+	}
+	return ""
 }
 
 // bruteForceJWT attempts to brute force the JWT signature using a dictionary file
@@ -104,26 +207,7 @@ func bruteForceJWT(token string, dictPath string) string {
 		if secretCandidate == "" {
 			continue
 		}
-
-		var computedSig []byte
-
-		// Calculate signature based on algorithm
-		switch strings.ToUpper(alg) {
-		case "HS256":
-			h := hmac.New(sha256.New, []byte(secretCandidate))
-			h.Write([]byte(dataToSign))
-			computedSig = h.Sum(nil)
-		case "HS512":
-			h := hmac.New(sha512.New, []byte(secretCandidate))
-			h.Write([]byte(dataToSign))
-			computedSig = h.Sum(nil)
-		default:
-			fmt.Printf("Unsupported algorithm for brute force: %s (Currently only HS256, HS512 supported)\n", alg)
-			return ""
-		}
-
-		// Compare signatures (using hmac.Equal to prevent timing attacks)
-		if hmac.Equal(computedSig, targetSig) {
+		if validateJWT(string(targetSig), alg, dataToSign, secretCandidate) {
 			return secretCandidate
 		}
 	}
