@@ -15,12 +15,16 @@ import (
 	"strings"
 )
 
-var b64 = base64.RawURLEncoding
-var jwtStr string
-var fuzzFlag bool
-var dictFile string
-var bruteForce bool
-var bruteForceString string
+var (
+	b64      = base64.RawURLEncoding
+	jwtStr   string
+	fuzzFlag bool
+	dictFile string
+
+	bruteForce       bool
+	bruteForceString string
+	bruteForceLength int
+)
 
 const (
 	lowercase = "abcdefghijklmnopqrstuvwxyz"
@@ -35,8 +39,10 @@ func main() {
 	flag.StringVar(&jwtStr, "jwt", "", "jwt token")
 	flag.StringVar(&dictFile, "filename", "dict/fuzz.txt", "fuzz dict filename")
 	flag.BoolVar(&fuzzFlag, "fuzz", false, "fuzz")
+
 	flag.BoolVar(&bruteForce, "brute", false, "brute force")
-	flag.StringVar(&bruteForceString, "fuzz_sting", s, "brute force")
+	flag.StringVar(&bruteForceString, "brute_sting", s, "brute force")
+	flag.IntVar(&bruteForceLength, "brute_length", 5, "brute force length")
 	flag.Parse()
 
 	if jwtStr == "" {
@@ -61,7 +67,7 @@ func main() {
 		return
 	}
 	if bruteForce {
-		result := bruteForceStringJWT(jwtStr, strings.Split(bruteForceString, ""), 4)
+		result := bruteForceStringJWT(jwtStr, strings.Split(bruteForceString, ""), bruteForceLength)
 		if result != "" {
 			fmt.Println("Success: Key found:", result)
 		} else {
