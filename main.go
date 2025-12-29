@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/sha512"
@@ -16,13 +17,19 @@ import (
 var b64 = base64.RawURLEncoding
 var jwtStr string
 var fuzzFlag bool
+var dictFile string
 
 func main() {
 	// Original JWT (from your input)
 	flag.StringVar(&jwtStr, "jwt", "", "jwt token")
+	flag.StringVar(&dictFile, "filename", "dict/fuzz.txt", "fuzz dict filename")
 	flag.BoolVar(&fuzzFlag, "fuzz", false, "fuzz")
 	flag.Parse()
 
+	if jwtStr == "" {
+		fmt.Println("Error: Please provide a valid JWT token, use -jwt ")
+		return
+	}
 	fmt.Println("=== JWT Vulnerability Payload Generator ===")
 	fmt.Println("Original Token:", jwtStr)
 	parts := strings.Split(jwtStr, ".")
@@ -30,18 +37,28 @@ func main() {
 		fmt.Println("Error: Invalid JWT format")
 		return
 	}
+	fmt.Println("JWT Info:\n" + parseJWT(parts[1]))
 	if !fuzzFlag {
 		vlunAttack(parts[0], parts[1])
 	} else {
-		result := bruteForceJWT(jwtStr, "fuzz.txt")
+		result := bruteForceJWT(jwtStr, dictFile)
 		if result != "" {
 			fmt.Println("Success: Key found:", result)
-			vlunAttack(parts[0], parts[1])
 		} else {
 			fmt.Println("Key not found")
 		}
 	}
 
+}
+
+func parseJWT(payload string) string {
+	payloadBytes, _ := decodeB64(payload)
+	var out bytes.Buffer
+	err := json.Indent(&out, payloadBytes, "", "  ")
+	if err != nil {
+		return ""
+	}
+	return out.String()
 }
 
 // bruteForceJWT attempts to brute force the JWT signature using a dictionary file
